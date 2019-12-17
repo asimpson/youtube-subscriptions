@@ -318,17 +318,73 @@ fn get_atom_videos(channel: roxmltree::Node, channel_url: &String) -> Vec<Item> 
     }).collect::<Vec<Item>>()
 }
 
-fn get_channel_videos_from_contents(contents: &str, channel_url: &String) -> Vec<Item> {
-    match roxmltree::Document::parse(contents) {
-        Ok(document) =>
-            match document.descendants().find(|n| n.tag_name().name() == "channel") {
-                Some(channel) => get_atom_videos(channel, &channel_url),
-                None => get_rss_videos(document, &channel_url),
-            },
-        Err(e) => {
-            debug(&format!("failed parsing xml {}", e));
+fn parse_lbry_item(object: serde_json::Value) -> Item {
+    match object {
+        serde_json::Value::Object(object) => {
+        }
+    }
+}
+
+fn get_lbry_videos(document: serde_json::Value, channel_url: &String) -> Vec<Item> {
+    match document {
+        serde_json::Value::Object(object) => {
+            if object.contains_key("result") {
+                match object.get("result") {
+                    Some(serde_json::Value::Object(result)) => {
+                        if object.contains_key("items") {
+                            match object.get("result") {
+                                Some(serde_json::Value::Array(items)) => {
+                                    items.iter().map(|object| parse_lbry_item(object)).collect()
+                                }
+                                _ => {
+                                    debug("failed parsing document");
+                                    vec![]
+                                },
+
+                            }
+                        }
+                        else {
+                            vec![]
+                        }
+                    }
+                    _ =>  {
+                        debug("failed parsing document");
+                        vec![]
+                    },
+                }
+            }
+            else {
+                vec![]
+            }
+        },
+        _ =>  {
+            debug("failed parsing document");
             vec![]
         },
+    }
+}
+
+fn get_channel_videos_from_contents(contents: &str, channel_url: &String) -> Vec<Item> {
+    if channel_url.starts_with("lbry://") {
+        match serde_json::from_str(contents) {
+            Ok(document) => get_lbry_videos(document, &channel_url),
+            Err(e) =>  {
+                debug(&format!("failed parsing xml {}", e));
+                vec![]
+            },
+        }
+    } else {
+        match roxmltree::Document::parse(contents) {
+            Ok(document) =>
+                match document.descendants().find(|n| n.tag_name().name() == "channel") {
+                    Some(channel) => get_atom_videos(channel, &channel_url),
+                    None => get_rss_videos(document, &channel_url),
+                },
+            Err(e) => {
+                debug(&format!("failed parsing xml {}", e));
+                vec![]
+            },
+        }
     }
 }
 
@@ -346,7 +402,7 @@ fn get_original_channel_videos(channel_url: &String, channel_etag: &Option<&Stri
                     })
 }
 
-fn get_headers(channel_etag: Option<&String>) -> HeaderMap {
+fn get_headers(channel_etag: &Option<&String>) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("*/*"));
     match channel_etag {
@@ -362,10 +418,21 @@ fn get_headers(channel_etag: Option<&String>) -> HeaderMap {
     headers
 }
 
+fn get_request(client: &reqwest::Client, channel_url: &String, channel_etag: &Option<&String>) -> reqwest::RequestBuilder {
+    if channel_url.starts_with("lbry://") {
+        client.post("http://localhost:5279")
+            .body(format!("{{\"method\":\"claim_search\",\"params\":{{\"channel\":\"{}\",\"order_by\":[\"release_time\"]}}}}", channel_url))
+    }
+    else
+    {
+        client.get(channel_url.as_str())
+            .headers(get_headers(channel_etag))
+    }
+}
+
 async fn get_channel_videos(client: &reqwest::Client, channel_url: String, channel_etag: Option<&String>, original_videos: &Items) -> Option<ChanelItems> {
     for _i in 0..2 {
-        let request = client.get(channel_url.as_str())
-            .headers(get_headers(channel_etag));
+        let request = get_request(client, &channel_url, &channel_etag);
         let wrapped_response = request.send().await;
         match wrapped_response {
             Ok(response) => {
